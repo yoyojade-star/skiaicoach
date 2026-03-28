@@ -55,3 +55,7 @@ Desktop.ini
 # Logs / local scratch
 *.log
 *.tmp
+
+# ML model weights (e.g. Ultralytics YOLO *.pt checkpoints)
+*.pt
+*.pth
