@@ -1,0 +1,26 @@
+version: '3.8'
+services:
+  backend:
+    build: .
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./data_store:/app/data_store
+      - ./uploads:/app/uploads
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+
+  frontend:
+    build: .
+    command: streamlit run app_frontend.py --server.port 8501
+    ports:
+      - "8501:8501"
+    depends_on:
+      - backend

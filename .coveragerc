@@ -1,0 +1,22 @@
+# Picked up by `coverage` / `pytest-cov` when run from the repository root.
+#
+# Example:
+#   pytest -q --cov=. --cov-config=.coveragerc --cov-report=term-missing
+# Optional HTML report (add coverage_html/ to .gitignore if you use this):
+#   pytest -q --cov=. --cov-config=.coveragerc --cov-report=html
+
+[run]
+relative_files = true
+source = .
+omit =
+    tests/*
+    .venv/*
+    **/__pycache__/**
+
+[report]
+precision = 0
+skip_empty = true
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    if TYPE_CHECKING:

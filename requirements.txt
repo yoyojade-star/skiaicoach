@@ -1,0 +1,33 @@
+# --- Web Framework & API Stack ---
+fastapi[standard]
+uvicorn
+python-multipart
+requests
+requests-toolbelt
+
+# --- Computer Vision & Kinematics (GPU Optimized) ---
+# Note: Dockerfile will handle the specific CUDA-torch install 
+# but these are the high-level wrappers
+opencv-python-headless
+imageio-ffmpeg
+ultralytics
+scipy
+numpy
+pandas
+
+# --- AI Orchestration & Gemini 3.1 ---
+google-genai
+langchain
+langchain-community
+langchain-google-genai
+langchain-core
+langgraph
+pydantic
+
+# --- Frontend & Environment ---
+streamlit
+python-dotenv
+
+# --- Dev / tests ---
+pytest
+pytest-cov
