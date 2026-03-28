@@ -59,3 +59,13 @@ Desktop.ini
 # ML model weights (e.g. Ultralytics YOLO *.pt checkpoints)
 *.pt
 *.pth
+
+# Android (Gradle / Studio)
+android/**/local.properties
+android/.gradle/
+android/**/.cxx/
+android/**/*.apk
+android/**/*.aab
+android/**/release/
+*.jks
+*.keystore

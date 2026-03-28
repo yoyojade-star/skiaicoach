@@ -84,6 +84,17 @@ pytest -q --cov=. --cov-config=.coveragerc --cov-report=term-missing
 | `schema.py` | Pydantic schema for agent JSON responses |
 | `ski_entry_bootstrap.py` | Windows asyncio policy before FastAPI imports |
 | `tests/` | Pytest suite |
+| `android/` | Kotlin + Jetpack Compose app (see `android/README.md`) |
+
+## Android app
+
+A **Kotlin + Jetpack Compose** client lives under **`android/`**. It uploads a video to `POST /upload`, polls `GET /result/{job_id}`, and plays the analyzed MP4 from `/uploads/…` with **ExoPlayer**.
+
+- Open the **`android`** folder in **Android Studio** (not the repo root).
+- Emulator default base URL: **`http://10.0.2.2:8001`** (see `BuildConfig.DEFAULT_BASE_URL`).
+- Physical device: set base URL to `http://<your-pc-lan-ip>:8001` in the app.
+
+Details: **`android/README.md`**.
 
 ## Docker
 
