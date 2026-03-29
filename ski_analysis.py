@@ -27,10 +27,23 @@ DEFAULT_SEGMENT_WEIGHTS: dict[str, float] = {
 def smooth_keypoint_trajectories(
     raw_kps: np.ndarray, window_length: int = 7, polyorder: int = 3
 ) -> np.ndarray:
-    """Savitzky–Golay smoothing per keypoint axis. `raw_kps` shape (T, 17, 2).
+    """Applies Savitzky–Golay smoothing to each keypoint's x and y coordinates.
 
-    Shorter windows reduce temporal smearing vs the original frames (fast / distant
-    subjects); overlays use raw keypoints while metrics use this output.
+    This function smooths the temporal trajectory of each of the 17 keypoints
+    independently. It is used to reduce jitter from frame-to-frame predictions.
+    The window length is dynamically adjusted for short sequences to prevent errors.
+
+    Args:
+        raw_kps (np.ndarray): A NumPy array of shape (T, 17, 2) containing the
+            raw keypoint coordinates, where T is the number of frames.
+        window_length (int, optional): The length of the filter window. Must be
+            a positive odd integer. Defaults to 7.
+        polyorder (int, optional): The order of the polynomial used to fit the
+            samples. Must be less than window_length. Defaults to 3.
+
+    Returns:
+        np.ndarray: A NumPy array of the same shape as `raw_kps` with the
+            smoothed keypoint coordinates.
     """
     num_frames = raw_kps.shape[0]
     smoothed_kps = np.copy(raw_kps)
@@ -51,7 +64,22 @@ def smooth_keypoint_trajectories(
 def center_of_mass(
     kp: np.ndarray, segment_weights: dict[str, float] | None = None
 ) -> tuple[float, float]:
-    """Weighted COM from COCO-style 17 keypoints (x, y)."""
+    """Calculates the center of mass for a single frame of keypoints.
+
+    The center of mass (COM) is computed as a weighted average of the centers
+    of predefined body segments. If all keypoints are zero, the COM is (0, 0).
+
+    Args:
+        kp (np.ndarray): A NumPy array of shape (17, 2) for a single frame,
+            representing the (x, y) coordinates of 17 COCO-style keypoints.
+        segment_weights (dict[str, float] | None, optional): A dictionary
+            mapping body segments to their proportional weight. If None,
+            `DEFAULT_SEGMENT_WEIGHTS` is used.
+
+    Returns:
+        tuple[float, float]: A tuple containing the (x, y) coordinates of the
+            calculated center of mass.
+    """
     if np.all(kp == 0):
         return 0.0, 0.0
     w = segment_weights or DEFAULT_SEGMENT_WEIGHTS
@@ -75,7 +103,23 @@ def center_of_mass(
 def posture_heuristics(
     kp: np.ndarray, com_x: float, _com_y: float
 ) -> dict[str, Any]:
-    """Posture flags and angles from one frame of keypoints."""
+    """Analyzes a single frame of keypoints to determine posture characteristics.
+
+    This function calculates various metrics and flags related to skiing posture,
+    such as being "backseat," "breaking at the waist," and having "stiff legs."
+    It also computes hip and knee angles and determines if the skier is in a
+    profile view relative to the camera.
+
+    Args:
+        kp (np.ndarray): A NumPy array of shape (17, 2) for a single frame.
+        com_x (float): The x-coordinate of the center of mass for the frame.
+        _com_y (float): The y-coordinate of the center of mass (unused).
+
+    Returns:
+        dict[str, Any]: A dictionary containing various posture flags and angles.
+            Keys include 'is_backseat', 'breaking_at_waist', 'stiff_legs',
+            'hip_angle', 'knee_angle', 'is_profile_view', and 'view_ratio'.
+    """
     h: dict[str, Any] = {
         "is_backseat": False,
         "breaking_at_waist": False,
@@ -152,7 +196,19 @@ def posture_heuristics(
 
 
 def edge_angulation(kp: np.ndarray) -> float:
-    """Average ski-edge-style inclination from ankle–knee geometry (both legs)."""
+    """Calculates the average ski edge inclination from ankle-knee geometry.
+
+    This function estimates the ski edge angle relative to the vertical axis
+    by calculating the angle of the lower leg (calf) for both legs and
+    averaging the results.
+
+    Args:
+        kp (np.ndarray): A NumPy array of shape (17, 2) for a single frame.
+
+    Returns:
+        float: The average inclination angle in degrees. Returns 0.0 if no
+            valid leg keypoints are found.
+    """
 
     def calc_inc(k: np.ndarray, a: np.ndarray) -> float | None:
         if np.all(k == 0) or np.all(a == 0):
@@ -171,7 +227,21 @@ def edge_angulation(kp: np.ndarray) -> float:
 def analyze_frame(
     kp: np.ndarray, com_x: float, com_y: float
 ) -> dict[str, Any] | None:
-    """Single-frame record for run_data, or None if keypoints are empty."""
+    """Performs a complete analysis for a single frame.
+
+    This function combines posture heuristics and edge angulation calculations
+    to create a comprehensive analysis record for one frame of video.
+
+    Args:
+        kp (np.ndarray): A NumPy array of shape (17, 2) for a single frame.
+        com_x (float): The x-coordinate of the center of mass for the frame.
+        com_y (float): The y-coordinate of the center of mass for the frame.
+
+    Returns:
+        dict[str, Any] | None: A dictionary containing the analysis results,
+            including posture data, edge inclination, and a list of flags.
+            Returns None if the keypoint data for the frame is all zero.
+    """
     if np.all(kp == 0):
         return None
     posture = posture_heuristics(kp, com_x, com_y)
@@ -187,7 +257,20 @@ def analyze_frame(
 
 
 def summarize_run_data(run_data: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Aggregate metrics from per-frame analysis list."""
+    """Aggregates per-frame analysis data into a run summary.
+
+    This function takes a list of frame-by-frame analysis results and computes
+    summary statistics for the entire ski run, such as the percentage of time
+    spent in poor posture, maximum edge angles, and a carving score.
+
+    Args:
+        run_data (list[dict[str, Any]]): A list of dictionaries, where each
+            dictionary is the output of `analyze_frame` for a single frame.
+
+    Returns:
+        dict[str, Any] | None: A dictionary containing summary metrics for the
+            run. Returns None if the input `run_data` is empty.
+    """
     total_frames = len(run_data)
     if total_frames == 0:
         return None

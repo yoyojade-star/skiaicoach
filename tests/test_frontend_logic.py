@@ -21,6 +21,7 @@ from frontend_logic import (
     job_is_stale_for_current_upload,
     load_skills_md,
     parse_coaching_feedback,
+    post_job_chat,
     strip_json_fenced_block,
     upload_identity,
 )
@@ -228,6 +229,24 @@ class TestFetchVideoBytes(unittest.TestCase):
             return mock_resp
 
         self.assertIsNone(fetch_video_bytes("http://x/v.mp4", get=fake_get))
+
+
+class TestPostJobChat(unittest.TestCase):
+    def test_posts_json_and_returns_dict(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "reply": "ok",
+            "chat_messages": [{"role": "user", "content": "Hi"}],
+        }
+
+        def fake_post(url, json=None, timeout=30):
+            self.assertIn("/jobs/abc/chat", url)
+            self.assertEqual(json, {"message": "Hi"})
+            return mock_resp
+
+        out = post_job_chat("http://host:9", "abc", "Hi", post=fake_post)
+        self.assertEqual(out["reply"], "ok")
 
 
 if __name__ == "__main__":

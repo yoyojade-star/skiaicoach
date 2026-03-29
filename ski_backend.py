@@ -15,10 +15,16 @@ from typing import Any, Callable
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
 VALID_VIDEO_EXTENSIONS = frozenset({".mp4", ".mov", ".avi", ".mkv", ".webm"})
+
+
+class JobChatRequest(BaseModel):
+    """Pydantic model for a chat request associated with a job."""
+    message: str = Field(..., min_length=1, max_length=12000)
 
 
 def configure_server_event_loop() -> None:
@@ -114,7 +120,10 @@ def run_analysis_task(
             "summary": summary,
             "feedback": feedback_out,
             "video_url": f"/uploads/{os.path.basename(output_path)}",
+            "chat_messages": [],
         }
+        if agent_skills is not None:
+            result_data["agent_skills"] = agent_skills
         save_result(job_id, result_data)
         logger.info("Analysis completed successfully for %s", job_id)
 
@@ -134,6 +143,34 @@ def create_app(
     ski_app_graph: Any | None = None,
     summarize_run_data: Callable[[list[Any]], dict[str, Any] | None] | None = None,
 ) -> FastAPI:
+    """
+    Creates and configures a FastAPI application instance.
+
+    This factory function sets up storage directories, CORS middleware, static
+    file serving, and all API endpoints for video upload, result retrieval,
+    and chat interaction. It injects dependencies for the analysis pipeline.
+
+    Args:
+        upload_dir (str | os.PathLike[str] | None, optional): Directory to store
+            uploaded and processed videos. Defaults to "uploads".
+        data_dir (str | os.PathLike[str] | None, optional): Directory to store
+            job metadata and results as JSON files. Defaults to "data_store".
+        title (str, optional): The title of the FastAPI application.
+            Defaults to "SkiAI Backend".
+        use_agent_feedback (bool, optional): If True, uses the agent-based
+            feedback generation. Defaults to False.
+        processor_cls (type | None, optional): The class responsible for video
+            processing (e.g., pose estimation).
+        coach_cls (type | None, optional): The class responsible for generating
+            AI feedback and handling chat.
+        ski_app_graph (Any | None, optional): The LangGraph instance for stateful
+            coaching analysis.
+        summarize_run_data (Callable | None, optional): A function to summarize
+            the raw data from the processor.
+
+    Returns:
+        FastAPI: The configured FastAPI application instance.
+    """
     upload_path = Path(upload_dir or os.path.abspath("uploads")).resolve()
     data_path = Path(data_dir or os.path.abspath("data_store")).resolve()
     upload_path.mkdir(parents=True, exist_ok=True)
@@ -145,6 +182,13 @@ def create_app(
     results_db: dict[str, Any] = {}
 
     def save_result(job_id: str, data: dict[str, Any]) -> None:
+        """
+        Persists job data to a JSON file and caches it in memory.
+
+        Args:
+            job_id (str): The unique identifier for the job.
+            data (dict[str, Any]): The job data to save.
+        """
         file_path = os.path.join(data_dir_str, f"{job_id}.json")
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(data, f)
@@ -168,6 +212,27 @@ def create_app(
         file: UploadFile = File(...),
         agent_skills: str | None = Form(None),
     ):
+        """
+        Handles video file uploads and starts the analysis pipeline.
+
+        This endpoint saves the uploaded video, creates a new job ID, and
+        schedules the `run_analysis_task` to execute in the background.
+
+        Args:
+            background_tasks (BackgroundTasks): FastAPI dependency to manage
+                background tasks.
+            file (UploadFile): The video file being uploaded.
+            agent_skills (str, optional): A string of specific skills for the
+                AI coach to focus on.
+
+        Returns:
+            dict: A dictionary containing the new job's ID and its initial
+                processing status.
+
+        Raises:
+            HTTPException: A 500 error if the file cannot be saved or the
+                background task cannot be started.
+        """
         skills_for_task = agent_skills if use_agent_feedback else None
         try:
             job_id = str(uuid.uuid4())
@@ -218,6 +283,19 @@ def create_app(
 
     @app.get("/result/{job_id}")
     async def get_result(job_id: str):
+        """
+        Retrieves the status and results for a specific analysis job.
+
+        It first checks an in-memory cache, then falls back to reading the
+        result from the corresponding JSON file on disk.
+
+        Args:
+            job_id (str): The unique identifier of the job to retrieve.
+
+        Returns:
+            dict: The job's data, or a dictionary with status "not_found"
+                if the job does not exist.
+        """
         result = results_db.get(job_id)
         if not result:
             file_path = os.path.join(data_dir_str, f"{job_id}.json")
@@ -235,6 +313,13 @@ def create_app(
 
     @app.get("/jobs")
     async def list_jobs():
+        """
+        Lists all available job results from the data store directory.
+
+        Returns:
+            list[Any]: A list of job data dictionaries loaded from JSON files.
+                Returns an empty list if the directory doesn't exist or is empty.
+        """
         jobs: list[Any] = []
         if not os.path.exists(data_dir_str):
             return jobs
@@ -247,5 +332,91 @@ def create_app(
             except (json.JSONDecodeError, OSError):
                 continue
         return jobs
+
+    @app.post("/jobs/{job_id}/chat")
+    def post_job_chat(job_id: str, body: JobChatRequest) -> dict[str, Any]:
+        """
+        Handles a follow-up chat message for a completed analysis job.
+
+        It retrieves the job's context, invokes the AI coach's chat function,
+        and persists the updated conversation history.
+
+        Args:
+            job_id (str): The identifier of the job to chat with.
+            body (JobChatRequest): The request body containing the user's message.
+
+        Returns:
+            dict[str, Any]: A dictionary containing the AI's reply and the
+                complete, updated chat history.
+
+        Raises:
+            HTTPException: Various errors for conditions like job not found (404),
+                coach not configured (503), job not completed (400), or internal
+                chat errors (500).
+        """
+        if coach_cls is None:
+            raise HTTPException(status_code=503, detail="Coach is not configured.")
+        user_text = body.message.strip()
+        if not user_text:
+            raise HTTPException(status_code=400, detail="Message is empty.")
+
+        result: dict[str, Any] | None = results_db.get(job_id)
+        if not result:
+            file_path = os.path.join(data_dir_str, f"{job_id}.json")
+            if os.path.exists(file_path):
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        result = json.load(f)
+                        results_db[job_id] = result
+                except (json.JSONDecodeError, OSError):
+                    result = None
+
+        if not result:
+            raise HTTPException(status_code=404, detail="Job not found.")
+        if result.get("status") != "completed":
+            raise HTTPException(
+                status_code=400,
+                detail="Analysis is not complete yet.",
+            )
+
+        summary = result.get("summary")
+        if not isinstance(summary, dict):
+            raise HTTPException(status_code=400, detail="Job has no run summary.")
+
+        raw_history = result.get("chat_messages")
+        chat_messages: list[dict[str, Any]] = (
+            list(raw_history) if isinstance(raw_history, list) else []
+        )
+
+        coach = coach_cls()
+        chat_fn = getattr(coach, "chat_followup", None)
+        if chat_fn is None:
+            raise HTTPException(
+                status_code=501,
+                detail="The configured coach does not support follow-up chat.",
+            )
+
+        try:
+            reply = chat_fn(
+                run_summary=summary,
+                initial_feedback=result.get("feedback"),
+                chat_messages=chat_messages,
+                user_message=user_text,
+                skills=result.get("agent_skills"),
+            )
+        except Exception as e:
+            logger.exception("Chat failed for job %s", job_id)
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+        reply_text = reply if isinstance(reply, str) else str(reply)
+
+        updated = dict(result)
+        history = list(chat_messages)
+        history.append({"role": "user", "content": user_text})
+        history.append({"role": "assistant", "content": reply_text})
+        updated["chat_messages"] = history
+        save_result(job_id, updated)
+
+        return {"reply": reply_text, "chat_messages": history}
 
     return app

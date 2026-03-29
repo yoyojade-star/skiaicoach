@@ -6,6 +6,7 @@ Ski run analysis pipeline: **pose estimation (YOLO)** on video, **kinematic summ
 
 - Upload a ski video; backend runs pose tracking, edge/backseat heuristics, and optional **LangGraph**-merged coaching (standard mode).
 - **Agent mode** accepts editable **skills** (markdown) and returns **structured JSON** coaching from Gemini.
+- After a run finishes, **follow-up chat** in Streamlit calls `POST /jobs/{job_id}/chat` — text-only Gemini replies grounded in the saved summary, initial coaching, and (in agent mode) the same **skills** snapshot stored on the job.
 - Analyzed video is re-encoded to **H.264** when possible (system `ffmpeg` or bundled **`imageio-ffmpeg`**) for reliable in-browser replay in Streamlit.
 
 ## Requirements

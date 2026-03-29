@@ -11,7 +11,28 @@ __all__ = ["SkiCoachingFeedback"]
 
 
 class SkiCoachingFeedback(BaseModel):
-    """Structured multimodal coach output matching the agent API contract."""
+    """Structured multimodal coach output matching the agent API contract.
+
+    This class defines the data structure for ski coaching feedback, including
+    identified faults, explanations, scores, and recommended drills. It is used
+    as a Pydantic model to ensure type safety and structure for API responses.
+
+    Attributes:
+        primary_fault (str): The main technical issue identified in the skier's
+            performance.
+        biomechanical_explanation (str): An explanation of the fault based on
+            the skier's body mechanics and joint angles.
+        carving_score_analysis (str): A detailed analysis of the carving score,
+            with suggestions for improving edge angle.
+        recommended_drill_name (str): The name of a specific drill recommended
+            to address the primary fault.
+        drill_steps (list[str]): A list of step-by-step instructions for
+            performing the recommended drill.
+        visual_observations (str): Specific observations made from the video
+            analysis, such as posture or timing.
+        progression_note (str): A note on the skier's progress over time,
+            comparing to past performance if available.
+    """
 
     primary_fault: str = Field(
         description=(

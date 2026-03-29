@@ -157,5 +157,47 @@ class TestGeminiSkiCoachGenerateFeedbackAgent(unittest.TestCase):
         self.assertIn("Empty model response", out["biomechanical_explanation"])
 
 
+class TestGeminiSkiCoachChatFollowup(unittest.TestCase):
+    def setUp(self):
+        self.mock_client = MagicMock()
+        self.coach = GeminiSkiCoach(client=self.mock_client)
+
+    def test_builds_history_and_returns_text(self):
+        mock_resp = MagicMock()
+        mock_resp.text = "  Do javelin turns.  "
+        self.mock_client.models.generate_content.return_value = mock_resp
+
+        out = self.coach.chat_followup(
+            run_summary={"carving_score": 50},
+            initial_feedback={"primary_fault": "A-frame"},
+            chat_messages=[
+                {"role": "user", "content": "Hi"},
+                {"role": "assistant", "content": "Hello!"},
+            ],
+            user_message="Best drill?",
+            skills="Focus on ankles.",
+        )
+        self.assertEqual(out, "Do javelin turns.")
+        self.mock_client.models.generate_content.assert_called_once()
+        call_kw = self.mock_client.models.generate_content.call_args.kwargs
+        contents = call_kw["contents"]
+        self.assertEqual(len(contents), 3)
+        self.assertEqual(contents[-1].role, "user")
+
+    def test_empty_model_reply_falls_back(self):
+        mock_resp = MagicMock()
+        mock_resp.text = ""
+        self.mock_client.models.generate_content.return_value = mock_resp
+
+        out = self.coach.chat_followup(
+            run_summary={"carving_score": 1},
+            initial_feedback="Earlier: stay forward.",
+            chat_messages=[],
+            user_message="Ok?",
+            skills=None,
+        )
+        self.assertIn("rephrasing", out)
+
+
 if __name__ == "__main__":
     unittest.main()

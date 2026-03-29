@@ -27,10 +27,28 @@ ensure_job_id_session_state()
 
 @st.cache_data
 def load_agent_skills() -> str:
+    """Loads the agent's skills from the 'skills.md' file.
+
+    Uses Streamlit's caching to prevent re-reading the file on every script run.
+
+    Returns:
+        str: The content of the skills markdown file.
+    """
     return load_skills_md("skills.md")
 
 
 def get_video_bytes(url: str) -> bytes | None:
+    """Fetches video data as bytes from a given URL.
+
+    This function is a wrapper around `fetch_video_bytes` and is passed as a
+    callback to the polling utility to retrieve video content for display.
+
+    Args:
+        url (str): The URL of the video file to fetch.
+
+    Returns:
+        bytes | None: The video content as bytes, or None if fetching fails.
+    """
     return fetch_video_bytes(url)
 
 

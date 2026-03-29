@@ -22,6 +22,7 @@ from frontend_logic import (
     fetch_jobs,
     job_is_stale_for_current_upload,
     parse_coaching_feedback,
+    post_job_chat,
     upload_identity,
 )
 
@@ -70,6 +71,7 @@ AGENT_PROFILE = FrontendAppProfile(
 
 
 def ensure_job_id_session_state() -> None:
+    """Initializes job-related keys in the Streamlit session state."""
     if "job_id" not in st.session_state:
         st.session_state["job_id"] = None
     if "_job_started_for_upload_key" not in st.session_state:
@@ -77,7 +79,14 @@ def ensure_job_id_session_state() -> None:
 
 
 def clear_job_if_uploader_file_changed(uploaded_file: Any | None) -> None:
-    """Drop ``job_id`` when the user picks a new file before starting another run."""
+    """Clears the current job ID from session state if the uploaded file changes.
+
+    This prevents displaying results for a previous file when a new file is
+    selected in the uploader but the analysis has not been re-run.
+
+    Args:
+        uploaded_file (Any | None): The file object from `st.file_uploader`.
+    """
     current = upload_identity(uploaded_file)
     if not job_is_stale_for_current_upload(
         job_id=st.session_state.get("job_id"),
@@ -90,16 +99,36 @@ def clear_job_if_uploader_file_changed(uploaded_file: Any | None) -> None:
 
 
 def configure_page(profile: FrontendAppProfile) -> None:
+    """Configures the Streamlit page settings like title, icon, and layout.
+
+    Args:
+        profile (FrontendAppProfile): A dataclass containing page configuration strings.
+    """
     st.set_page_config(page_title=profile.page_title, page_icon="⛷️", layout="wide")
 
 
 def render_standard_skills_sidebar(skills_markdown: str) -> None:
+    """Renders the agent's skills in a non-editable expander in the sidebar.
+
+    Args:
+        skills_markdown (str): The markdown content of the agent's skills.
+    """
     st.header("⛷️ Agent Configuration")
     with st.expander("🛠️ Active Skills (skills.md)"):
         st.markdown(skills_markdown)
 
 
 def render_agent_skills_text_area(initial_skills: str) -> str:
+    """Renders an editable text area for agent skills and returns its current content.
+
+    This allows users to modify the agent's system prompt on the fly.
+
+    Args:
+        initial_skills (str): The initial markdown content to display in the text area.
+
+    Returns:
+        str: The current, possibly edited, content of the text area.
+    """
     st.header("⛷️ Agent Configuration")
     return st.text_area(
         "Edit Agent Knowledge (skills.md)",
@@ -113,6 +142,14 @@ def render_agent_skills_text_area(initial_skills: str) -> str:
 
 
 def render_history_sidebar(backend_url: str) -> None:
+    """Fetches and displays the job history in the Streamlit sidebar.
+
+    Renders a button for each completed job to reload its results and a line chart
+    showing the carving score progression over time.
+
+    Args:
+        backend_url (str): The base URL of the backend API service.
+    """
     st.header("📜 Session History")
     history = fetch_jobs(backend_url)
     if not history:
@@ -142,6 +179,18 @@ def run_upload_with_progress(
     success_message: str,
     upload_identity_key: tuple[str, int] | None = None,
 ) -> None:
+    """Uploads a file to the backend with a progress bar.
+
+    On success, it updates the session state with the new job ID.
+
+    Args:
+        backend_url (str): The base URL of the backend API.
+        uploaded_file (Any): The file object from `st.file_uploader`.
+        agent_skills (str | None): Optional markdown skills to be sent with the upload.
+        success_message (str): The message to display in `st.success` on completion.
+        upload_identity_key (tuple[str, int] | None, optional): A unique identifier
+            for the uploaded file to track state. Defaults to None.
+    """
     progress_bar = st.progress(0, text="Preparing upload...")
 
     def progress_callback(monitor: Any) -> None:
@@ -174,6 +223,72 @@ def run_upload_with_progress(
         st.error(f"Connection Error: {e}")
 
 
+def render_followup_chat(
+    backend_url: str,
+    job_id: str,
+    server_chat_messages: list[dict[str, Any]],
+    profile: FrontendAppProfile,
+) -> None:
+    """Renders a chat interface for follow-up questions about a completed analysis.
+
+    Manages chat history within a Streamlit fragment to prevent full page reloads
+    on message submission.
+
+    Args:
+        backend_url (str): The base URL of the backend API.
+        job_id (str): The ID of the job being discussed.
+        server_chat_messages (list[dict[str, Any]]): The initial chat history
+            from the server.
+        profile (FrontendAppProfile): The app profile for UI strings.
+    """
+
+    @st.fragment
+    def _chat_fragment() -> None:
+        anchor = "_coach_chat_active_job_id"
+        buf_key = f"_coach_chat_history_{job_id}"
+        if st.session_state.get(anchor) != job_id:
+            st.session_state[anchor] = job_id
+            st.session_state[buf_key] = [
+                dict(m)
+                for m in server_chat_messages
+                if isinstance(m, dict) and m.get("role") in ("user", "assistant")
+            ]
+
+        messages: list[dict[str, Any]] = st.session_state[buf_key]
+
+        st.divider()
+        st.subheader("💬 Ask the coach")
+        st.caption(
+            "Follow-up questions use your run metrics and the analysis above "
+            "(the model does not re-watch the video in this chat)."
+        )
+        for m in messages:
+            role = m.get("role", "user")
+            with st.chat_message("user" if role == "user" else "assistant"):
+                st.write(m.get("content", ""))
+
+        if prompt := st.chat_input("Ask a follow-up about this run…"):
+            with st.spinner("Coach is thinking…"):
+                try:
+                    out = post_job_chat(backend_url, job_id, prompt)
+                    hist = out.get("chat_messages")
+                    if isinstance(hist, list):
+                        st.session_state[buf_key] = [
+                            dict(x)
+                            for x in hist
+                            if isinstance(x, dict)
+                            and x.get("role") in ("user", "assistant")
+                        ]
+                    try:
+                        st.rerun(scope="fragment")
+                    except TypeError:
+                        st.rerun()
+                except Exception as e:
+                    st.error(profile.failed_detail_fmt.format(detail=e))
+
+    _chat_fragment()
+
+
 def render_completed_results(
     backend_url: str,
     job_id: str,
@@ -181,7 +296,25 @@ def render_completed_results(
     feedback: dict[str, Any],
     get_video_bytes: Callable[[str], bytes | None],
     profile: FrontendAppProfile,
+    *,
+    server_chat_messages: list[dict[str, Any]] | None = None,
 ) -> None:
+    """Displays the complete results for a successful job.
+
+    This includes performance metrics, AI coaching feedback, the synthesized
+    replay video, a download button, and the follow-up chat interface.
+
+    Args:
+        backend_url (str): The base URL of the backend API.
+        job_id (str): The ID of the completed job.
+        summary (dict[str, Any]): A dictionary of performance metrics.
+        feedback (dict[str, Any]): A dictionary of parsed coaching feedback.
+        get_video_bytes (Callable[[str], bytes | None]): A function that takes a
+            video URL and returns its byte content.
+        profile (FrontendAppProfile): The app profile for UI strings.
+        server_chat_messages (list[dict[str, Any]] | None, optional): The initial
+            chat history from the server. Defaults to None.
+    """
     col_stats, col_coach = st.columns([1, 2])
     with col_stats:
         st.subheader("📊 Performance Metrics")
@@ -247,6 +380,51 @@ def render_completed_results(
             mime="video/mp4",
         )
 
+    render_followup_chat(
+        backend_url,
+        job_id,
+        server_chat_messages if server_chat_messages is not None else [],
+        profile,
+    )
+
+
+def _render_completed_job_view(
+    backend_url: str,
+    job_id: str,
+    data: dict[str, Any],
+    get_video_bytes: Callable[[str], bytes | None],
+    profile: FrontendAppProfile,
+) -> None:
+    """Helper to render the view for a completed job.
+
+    Shows celebratory balloons once per job and then delegates to
+    `render_completed_results` to display the detailed analysis.
+
+    Args:
+        backend_url (str): The base URL of the backend API.
+        job_id (str): The ID of the completed job.
+        data (dict[str, Any]): The full job result data from the API.
+        get_video_bytes (Callable[[str], bytes | None]): A function to fetch
+            the analysis video bytes.
+        profile (FrontendAppProfile): The app profile for UI strings.
+    """
+    balloons_key = f"_analysis_balloons_shown_{job_id}"
+    if not st.session_state.get(balloons_key):
+        st.balloons()
+        st.session_state[balloons_key] = True
+    feedback = parse_coaching_feedback(data.get("feedback"))
+    raw_chat = data.get("chat_messages")
+    chat_hist = raw_chat if isinstance(raw_chat, list) else []
+    render_completed_results(
+        backend_url,
+        job_id,
+        data.get("summary", {}),
+        feedback,
+        get_video_bytes,
+        profile,
+        server_chat_messages=chat_hist,
+    )
+
 
 def poll_job_until_terminal(
     backend_url: str,
@@ -254,39 +432,65 @@ def poll_job_until_terminal(
     get_video_bytes: Callable[[str], bytes | None],
     profile: FrontendAppProfile,
 ) -> None:
+    """Polls the backend API for a job's status until it is completed or failed.
+
+    Displays a `st.status` indicator during polling and renders the final result
+    or an error message upon completion.
+
+    Args:
+        backend_url (str): The base URL of the backend API.
+        job_id (str): The ID of the job to poll.
+        get_video_bytes (Callable[[str], bytes | None]): A function to fetch
+            the analysis video bytes upon job completion.
+        profile (FrontendAppProfile): The app profile for UI strings.
+    """
+    base = backend_url.rstrip("/")
+    url = f"{base}/result/{job_id}"
+
+    try:
+        res = requests.get(url)
+        data = res.json()
+    except Exception as e:
+        st.error(profile.connection_lost_fmt.format(detail=e))
+        return
+
+    st_val = data.get("status")
+    if st_val == "completed":
+        _render_completed_job_view(backend_url, job_id, data, get_video_bytes, profile)
+        return
+    if st_val == "failed":
+        st.error(profile.failed_detail_fmt.format(detail=data.get("error") or ""))
+        return
+
     with st.status(
         f"Analyzing Biomechanics (Job: {job_id[:8]})...", expanded=True
     ) as status:
-        completed = False
-        while not completed:
+        while True:
             try:
-                res = requests.get(f"{backend_url.rstrip('/')}/result/{job_id}")
-                data = res.json()
-                if data.get("status") == "completed":
+                st_val = data.get("status")
+                if st_val == "completed":
                     status.update(
-                        label="Analysis Complete!", state="complete", expanded=False
+                        label="Analysis Complete!",
+                        state="complete",
+                        expanded=False,
                     )
-                    st.balloons()
-                    feedback = parse_coaching_feedback(data.get("feedback"))
-                    render_completed_results(
-                        backend_url,
-                        job_id,
-                        data.get("summary", {}),
-                        feedback,
-                        get_video_bytes,
-                        profile,
-                    )
-                    completed = True
-                elif data.get("status") == "failed":
+                    break
+                if st_val == "failed":
                     status.update(label="Analysis Failed", state="error")
                     st.error(
                         profile.failed_detail_fmt.format(
                             detail=data.get("error") or ""
                         )
                     )
-                    completed = True
-                else:
-                    time.sleep(3)
+                    return
+                time.sleep(3)
+                res = requests.get(url)
+                data = res.json()
             except Exception as e:
                 st.error(profile.connection_lost_fmt.format(detail=e))
-                break
+                return
+
+    if data.get("status") == "completed":
+        _render_completed_job_view(
+            backend_url, job_id, data, get_video_bytes, profile
+        )

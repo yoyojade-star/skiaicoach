@@ -36,8 +36,46 @@ DEFAULT_SKILLS_FALLBACK = (
     "Use standard PSIA biomechanics: focus on shin pressure, centered stance, and outside ski control."
 )
 
+CHAT_FOLLOWUP_SYSTEM_PREFIX = """
+You are the same elite PSIA-certified alpine ski coach who already produced the initial analysis below.
+The user is asking follow-up questions about that same run.
+
+Rules:
+- Ground answers in the kinematic summary and your initial coaching. Stay consistent with it.
+- You cannot see the video again in this chat; do not claim to re-watch footage. If they need another visual pass, say they should run a new analysis upload.
+- Be concise, practical, and safety-aware. Prefer specific cues and drills when helpful.
+"""
+
+
+def _initial_feedback_as_text(initial_feedback: Any) -> str:
+    """Formats the initial coaching feedback into a consistent string.
+
+    Args:
+        initial_feedback (Any): The initial feedback, which could be a dict,
+            string, or None.
+
+    Returns:
+        str: A string representation of the feedback.
+    """
+    if initial_feedback is None:
+        return "(No initial coaching text.)"
+    if isinstance(initial_feedback, dict):
+        try:
+            return json.dumps(initial_feedback, indent=2, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return str(initial_feedback)
+    return str(initial_feedback).strip() or "(No initial coaching text.)"
+
 
 def _agent_error_payload(message: str) -> dict[str, Any]:
+    """Creates a standardized JSON payload for agent-based errors.
+
+    Args:
+        message (str): The error message to include in the payload.
+
+    Returns:
+        dict[str, Any]: A dictionary structured for error reporting.
+    """
     return {
         "primary_fault": "Analysis Unavailable",
         "biomechanical_explanation": message,
@@ -62,6 +100,20 @@ class GeminiSkiCoach:
         client: Any | None = None,
         model_id: str | None = None,
     ):
+        """Initializes the GeminiSkiCoach.
+
+        Args:
+            api_key (str, optional): The Gemini API key. If not provided, the
+                GEMINI_API_KEY environment variable is used.
+            client (Any, optional): An existing `genai.Client` instance. If provided,
+                `api_key` is ignored. Used for testing.
+            model_id (str, optional): The specific Gemini model to use. Defaults
+                to "gemini-3.1-pro-preview".
+
+        Raises:
+            ValueError: If neither `api_key`, `client`, nor the `GEMINI_API_KEY`
+                environment variable is provided.
+        """
         if client is not None:
             self.client = client
         else:
@@ -77,7 +129,20 @@ class GeminiSkiCoach:
         self.system_instruction = GEMINI_COACH_SYSTEM_INSTRUCTION
 
     def _load_active_video_file(self, video_path: str) -> Any:
-        """Upload file, wait until ACTIVE; raises RuntimeError on failure."""
+        """Uploads a video file to Gemini and waits for it to become active.
+
+        This method handles the file upload and polls the API until the video
+        is processed and ready for analysis.
+
+        Args:
+            video_path (str): The local path to the video file.
+
+        Returns:
+            Any: The active `File` object from the Gemini API.
+
+        Raises:
+            RuntimeError: If video processing fails on the server.
+        """
         print("Uploading video to Gemini for visual analysis...")
         video_file = self.client.files.upload(file=video_path)
         print("Waiting for video processing to complete...")
@@ -92,6 +157,16 @@ class GeminiSkiCoach:
         return video_file
 
     def generate_feedback(self, video_path: str, run_summary: dict[str, Any] | None) -> str:
+        """Generates free-form text feedback for a ski run.
+
+        Args:
+            video_path (str): The local path to the ski run video.
+            run_summary (dict[str, Any] | None): A dictionary containing kinematic
+                data about the run.
+
+        Returns:
+            str: The generated coaching feedback as a string, or an error message.
+        """
         if not run_summary:
             return "No run data available."
 
@@ -131,9 +206,22 @@ class GeminiSkiCoach:
         summary: dict[str, Any] | None,
         skills: str | None = None,
     ) -> dict[str, Any]:
-        """
-        Structured JSON coaching with optional skills.md-style knowledge injection.
-        Used by the agent backend (`mainagent`); no LangGraph merge in the API layer.
+        """Generates structured JSON coaching feedback.
+
+        This method is used by the agent backend to get a structured response
+        that conforms to the `SkiCoachingFeedback` schema. It can optionally
+        inject a knowledge base from a `skills.md`-style file.
+
+        Args:
+            video_path (str): The local path to the ski run video.
+            summary (dict[str, Any] | None): A dictionary containing kinematic
+                data about the run.
+            skills (str, optional): A string containing a custom knowledge base
+                to guide the analysis. Defaults to standard PSIA biomechanics.
+
+        Returns:
+            dict[str, Any]: A dictionary containing the structured coaching
+                feedback or a standardized error payload.
         """
         if not summary:
             return _agent_error_payload("No run data available.")
@@ -183,3 +271,81 @@ Respond with JSON only, matching the response schema exactly.
 
         except Exception as e:
             return _agent_error_payload(f"The coach could not process the data: {e}")
+
+    def chat_followup(
+        self,
+        *,
+        run_summary: dict[str, Any],
+        initial_feedback: Any,
+        chat_messages: list[dict[str, Any]],
+        user_message: str,
+        skills: str | None = None,
+    ) -> str:
+        """Handles text-only follow-up questions after an initial analysis.
+
+        This method uses the stored run summary and initial feedback as context
+        to answer user questions without re-analyzing the video.
+
+        Args:
+            run_summary (dict[str, Any]): The kinematic summary of the run.
+            initial_feedback (Any): The initial coaching feedback (text or dict).
+            chat_messages (list[dict[str, Any]]): The history of the conversation,
+                where each dict has "role" ('user' or 'assistant') and "content".
+            user_message (str): The latest question from the user.
+            skills (str, optional): A string containing a custom knowledge base
+                to ground the answers.
+
+        Returns:
+            str: The model's text response to the user's question.
+        """
+        feedback_text = _initial_feedback_as_text(initial_feedback)
+        skills_block = (skills or "").strip()
+        if not skills_block:
+            skills_block = "Use standard PSIA biomechanics."
+
+        system_instruction = (
+            CHAT_FOLLOWUP_SYSTEM_PREFIX
+            + "\nOPTIONAL KNOWLEDGE BASE (from session skills):\n"
+            + skills_block
+            + "\n\nKINEMATIC SUMMARY (JSON):\n"
+            + json.dumps(run_summary, ensure_ascii=False)
+            + "\n\nINITIAL COACHING (verbatim from analysis):\n"
+            + feedback_text
+        )
+
+        contents: list[Any] = []
+        for m in chat_messages:
+            role = m.get("role")
+            text = (m.get("content") or "").strip()
+            if not text:
+                continue
+            api_role = "user" if role == "user" else "model"
+            if role not in ("user", "assistant"):
+                continue
+            contents.append(
+                types.Content(
+                    role=api_role,
+                    parts=[types.Part.from_text(text=text)],
+                )
+            )
+
+        contents.append(
+            types.Content(
+                role="user",
+                parts=[types.Part.from_text(text=user_message.strip())],
+            )
+        )
+
+        try:
+            response = self.client.models.generate_content(
+                model=self.model_id,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    temperature=0.5,
+                ),
+            )
+            out = (response.text or "").strip()
+            return out or "I don't have a response right now. Please try rephrasing."
+        except Exception as e:
+            return f"Sorry, I could not answer that: {e}"

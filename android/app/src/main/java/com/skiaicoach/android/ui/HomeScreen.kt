@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalMaterial3Api::class, UnstableApi::class)
+
 package com.skiaicoach.android.ui
 
 import android.view.ViewGroup
@@ -42,9 +44,8 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import kotlin.OptIn
 
-@OptIn(ExperimentalMaterial3Api::class)
-@androidx.annotation.OptIn(UnstableApi::class)
 @Composable
 fun HomeScreen(vm: MainViewModel) {
     val state by vm.state.collectAsStateWithLifecycle()
@@ -172,7 +173,6 @@ private fun RowCenteredProgress() {
     }
 }
 
-@androidx.annotation.OptIn(UnstableApi::class)
 @Composable
 private fun VideoPlayer(url: String, modifier: Modifier = Modifier) {
     val context = LocalContext.current

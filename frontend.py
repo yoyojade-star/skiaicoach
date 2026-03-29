@@ -23,10 +23,28 @@ ensure_job_id_session_state()
 
 @st.cache_data
 def load_agent_skills() -> str:
+    """Loads the agent skills from the markdown file.
+
+    This function is cached to avoid reloading the file on every run.
+
+    Returns:
+        str: The content of the skills markdown file.
+    """
     return load_skills_md("skills.md")
 
 
 def get_video_bytes(url: str) -> bytes | None:
+    """Fetches the video bytes from a given URL.
+
+    Note: This function is not cached to prevent transient failures
+    from being stored and blocking future attempts.
+
+    Args:
+        url (str): The URL of the video to fetch.
+
+    Returns:
+        bytes | None: The video content as bytes, or None if fetching fails.
+    """
     # Do not cache None: a transient failure would lock replay for the whole TTL.
     return fetch_video_bytes(url)
 

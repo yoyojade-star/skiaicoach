@@ -113,6 +113,8 @@ class TestRunAnalysisTask(unittest.TestCase):
 
         self.assertEqual(self.saved[-1][1]["status"], "completed")
         self.assertEqual(self.saved[-1][1]["feedback"]["primary_fault"], "ok")
+        self.assertEqual(self.saved[-1][1].get("agent_skills"), "Custom rules")
+        self.assertEqual(self.saved[-1][1].get("chat_messages"), [])
         coach_inst.generate_feedback_agent.assert_called_once()
         kw = coach_inst.generate_feedback_agent.call_args.kwargs
         self.assertEqual(kw["video_path"], in_path)
@@ -176,6 +178,7 @@ class TestRunAnalysisTask(unittest.TestCase):
         self.assertEqual(payload["status"], "completed")
         self.assertEqual(payload["feedback"], "trend + ai")
         self.assertIn("video_url", payload)
+        self.assertEqual(payload.get("chat_messages"), [])
         proc.process_video.assert_called_once()
         coach.generate_feedback.assert_called_once()
         graph.invoke.assert_called_once()
@@ -322,6 +325,111 @@ class TestCreateAppAgentRoutes(_CreateAppHarness):
         self.assertEqual(len(stored["skills_preview"]), 103)
         self.assertTrue(stored["skills_preview"].endswith("..."))
         self.assertEqual(stored["skills_preview"][:100], "x" * 100)
+
+
+class TestCreateAppJobChat(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.upload = self.tmp / "up"
+        self.data = self.tmp / "data"
+        self.coach_cls = MagicMock()
+        coach_inst = MagicMock()
+        coach_inst.chat_followup.return_value = "Try more ankle flexion."
+        self.coach_cls.return_value = coach_inst
+        self.app = create_app(
+            upload_dir=str(self.upload),
+            data_dir=str(self.data),
+            coach_cls=self.coach_cls,
+            processor_cls=MagicMock,
+            ski_app_graph=MagicMock(),
+            summarize_run_data=lambda _: None,
+        )
+        self.client = TestClient(self.app)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_chat_503_when_coach_missing(self):
+        app = create_app(
+            upload_dir=str(self.upload),
+            data_dir=str(self.data),
+            coach_cls=None,
+            processor_cls=None,
+            ski_app_graph=None,
+            summarize_run_data=None,
+        )
+        client = TestClient(app)
+        r = client.post("/jobs/x/chat", json={"message": "Hi"})
+        self.assertEqual(r.status_code, 503)
+
+    def test_chat_404_when_job_missing(self):
+        r = self.client.post("/jobs/missing-id/chat", json={"message": "Hi"})
+        self.assertEqual(r.status_code, 404)
+
+    def test_chat_400_when_not_completed(self):
+        jid = "processing-job"
+        self.data.mkdir(parents=True, exist_ok=True)
+        (self.data / f"{jid}.json").write_text(
+            json.dumps({"status": "processing", "job_id": jid}),
+            encoding="utf-8",
+        )
+        r = self.client.post(f"/jobs/{jid}/chat", json={"message": "Hi"})
+        self.assertEqual(r.status_code, 400)
+
+    def test_chat_200_persists_messages(self):
+        jid = "done-job"
+        self.data.mkdir(parents=True, exist_ok=True)
+        record = {
+            "status": "completed",
+            "job_id": jid,
+            "summary": {"carving_score": 60},
+            "feedback": {"primary_fault": "Backseat"},
+            "chat_messages": [],
+        }
+        (self.data / f"{jid}.json").write_text(
+            json.dumps(record), encoding="utf-8"
+        )
+        r = self.client.post(f"/jobs/{jid}/chat", json={"message": "  One drill?  "})
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["reply"], "Try more ankle flexion.")
+        self.assertEqual(len(body["chat_messages"]), 2)
+        self.assertEqual(body["chat_messages"][0]["role"], "user")
+        self.assertEqual(body["chat_messages"][0]["content"], "One drill?")
+        disk = json.loads((self.data / f"{jid}.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(disk["chat_messages"]), 2)
+        kw = self.coach_cls.return_value.chat_followup.call_args.kwargs
+        self.assertEqual(kw["user_message"], "One drill?")
+        self.assertEqual(kw["run_summary"]["carving_score"], 60)
+
+    def test_chat_501_when_coach_has_no_method(self):
+        class _NoChat:
+            pass
+
+        app = create_app(
+            upload_dir=str(self.upload),
+            data_dir=str(self.data),
+            coach_cls=_NoChat,
+            processor_cls=MagicMock,
+            ski_app_graph=MagicMock(),
+            summarize_run_data=lambda _: None,
+        )
+        client = TestClient(app)
+        jid = "x"
+        self.data.mkdir(parents=True, exist_ok=True)
+        (self.data / f"{jid}.json").write_text(
+            json.dumps(
+                {
+                    "status": "completed",
+                    "job_id": jid,
+                    "summary": {"carving_score": 1},
+                    "feedback": "ok",
+                }
+            ),
+            encoding="utf-8",
+        )
+        r = client.post(f"/jobs/{jid}/chat", json={"message": "Hi"})
+        self.assertEqual(r.status_code, 501)
 
 
 if __name__ == "__main__":
